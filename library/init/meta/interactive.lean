@@ -369,6 +369,77 @@ match loca with
 end >> try (reflexivity reducible)
     >> (returnopt rs.end_pos >>= save_info <|> skip)
 
+/- -- BEGIN HACK -- -/
+
+private meta def trace_rw_params (tactic_name: string) (r : rw_rule) (cfg : rewrite_cfg): tactic unit :=
+do
+  let s := "\n\nTactic:",
+  let s := s ++ "\n" ++ tactic_name,
+  let s := s ++ "\n" ++ "\nDeclName:",
+  n ← tactic.decl_name,
+  let s := s ++ "\n" ++ (to_string (to_fmt n)),
+  let s := s ++ "\n" ++ "\nState:",
+  state ← tactic.read,
+  let s := s ++ "\n" ++ (to_string (to_fmt state)),
+  let s := s ++ "\n" ++ "\nTarget:",
+  target ← tactic.target,
+  fmt <- tactic.pp target,
+  let s := s ++ "\n" ++ (to_string fmt),
+  let s := s ++ "\n" ++ "\nTarget raw:",
+  let s := s ++ "\n" ++ (to_string (to_raw_fmt target)),
+  let s := s ++ "\n" ++ "\nConfig md:",
+  let md := match cfg.md with
+  | transparency.all := "transparency.all"
+  | transparency.semireducible := "transparency.semireducible"
+  | transparency.instances := "transparency.instances"
+  | transparency.reducible := "transparency.reducible" 
+  | transparency.none := "transparency.none" 
+  end,
+  let s := s ++ "\n" ++ (to_string (to_fmt md)),
+  let s := s ++ "\n" ++ "\nRule position:",
+  let s := s ++ "\n" ++ (to_string (to_fmt r.pos)),
+  let s := s ++ "\n" ++ "\nFlipped:",
+  let s := s ++ "\n" ++ (to_string (to_fmt r.symm)),
+  let s := s ++ "\n" ++ "\nExpr:",
+  let s := s ++ "\n" ++ (to_string (to_fmt r.rule)),
+  let s := s ++ "\n" ++ "\nLocal type:",
+  e <- tactic.to_expr r.rule tt ff,  -- need to use optional params to avoid adding metavariable subgoals
+  t <- tactic.infer_type e,
+  fmt <- tactic.pp t,
+  let s := s ++ "\n" ++ (to_string fmt),
+  let s := s ++ "\n" ++ "\nLocal type raw:",
+  let s := s ++ "\n" ++ (to_string (to_raw_fmt t)),
+  let s := s ++ "\n" ++ "\nName:",
+  let n := local_pp_name r.rule,
+  let s := s ++ "\n" ++ (to_string (to_fmt n)),
+  s1 <- (do
+    d <- tactic.get_decl n,
+    let s1 := "\nDeclared Type:",
+    let dt := declaration.type d,
+    fmt <- tactic.pp dt,
+    let s1 := s1 ++ "\n" ++ (to_string fmt),
+    let s1 := s1 ++ "\n" ++ "\nDeclared type raw:",
+    let s1 := s1 ++ "\n" ++ (to_string (to_raw_fmt dt)),
+    return s1
+  ) <|> return "",
+  let s := s ++ "\n" ++ s1,
+  let s := s ++ "\n",
+  tactic.trace s,
+  return ()
+
+/- A wrapper around rw_core which provides valuable tracing information. -/
+private meta def rw_core_with_tracing (tactic_name: string) (rs : parse rw_rules) (loca : parse location) (cfg : rewrite_cfg) : tactic unit :=
+match loca with
+| interactive.loc.ns [none] := 
+  do
+    -- apply each rewrite rule seperately, tracing each time
+    rs.rules.mmap' (λ r, 
+      let r1 : tactic.interactive.rw_rules_t := { rules := [r], end_pos := none } in
+      trace_rw_params tactic_name r cfg >> rw_core r1 loca cfg)
+-- don't add tracing for rewrites using 'at'
+| _ := rw_core rs loca cfg
+end
+
 /--
 `rewrite e` applies identity `e` as a rewrite rule to the target of the main goal. If `e` is preceded by left arrow (`←` or `<-`), the rewrite is applied in the reverse direction. If `e` is a defined constant, then the equational lemmas associated with `e` are used. This provides a convenient way to unfold `e`.
 
@@ -377,31 +448,33 @@ end >> try (reflexivity reducible)
 `rewrite e at l` rewrites `e` at location(s) `l`, where `l` is either `*` or a list of hypotheses in the local context. In the latter case, a turnstile `⊢` or `|-` can also be used, to signify the target of the goal.
 -/
 meta def rewrite (q : parse rw_rules) (l : parse location) (cfg : rewrite_cfg := {}) : tactic unit :=
-propagate_tags (rw_core q l cfg)
+propagate_tags (rw_core_with_tracing "rewrite" q l cfg)
 
 /--
 An abbreviation for `rewrite`.
 -/
 meta def rw (q : parse rw_rules) (l : parse location) (cfg : rewrite_cfg := {}) : tactic unit :=
-propagate_tags (rw_core q l cfg)
+propagate_tags (rw_core_with_tracing "rw" q l cfg)
 
 /--
 `rewrite` followed by `assumption`.
 -/
 meta def rwa (q : parse rw_rules) (l : parse location) (cfg : rewrite_cfg := {}) : tactic unit :=
-rewrite q l cfg >> try assumption
+propagate_tags (rw_core_with_tracing "rwa" q l cfg) >> try assumption
 
 /--
 A variant of `rewrite` that uses the unifier more aggressively, unfolding semireducible definitions.
 -/
 meta def erewrite (q : parse rw_rules) (l : parse location) (cfg : rewrite_cfg := {md := semireducible}) : tactic unit :=
-propagate_tags (rw_core q l cfg)
+propagate_tags (rw_core_with_tracing "erewrite" q l cfg)
 
 /--
 An abbreviation for `erewrite`.
 -/
 meta def erw (q : parse rw_rules) (l : parse location) (cfg : rewrite_cfg := {md := semireducible}) : tactic unit :=
-propagate_tags (rw_core q l cfg)
+propagate_tags (rw_core_with_tracing "erw" q l cfg)
+
+/- -- END HACK -- -/
 
 precedence `generalizing` : 0
 
