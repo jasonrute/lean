@@ -371,23 +371,60 @@ end >> try (reflexivity reducible)
 
 /- -- BEGIN HACK -- -/
 
+inductive json
+| array : list json → json
+| object : list (string × json) → json
+| number : nat → json -- not handling int or float now
+| string : string → json
+| bool : bool → json
+| null : json
+
+universe u
+class has_to_json (α : Type u) :=
+(to_json : α → json)
+
+instance : has_to_json json :=
+⟨id⟩
+
+def to_json {α : Type u} [has_to_json α] : α → json :=
+has_to_json.to_json
+
+instance nat_has_to_json : has_to_json nat := ⟨json.number⟩
+instance bool_has_to_json : has_to_json bool := ⟨json.bool⟩
+instance string_has_to_json : has_to_json string := ⟨json.string⟩
+meta instance format_has_to_json : has_to_json format := ⟨λ fmt, json.string $ to_string fmt⟩
+
+meta def json_encode : json → string
+| (json.array js) := "[" ++ (string.intercalate ", " (js.map json_encode)) ++ "]"
+| (json.object kvs) := 
+  let pair_strings := kvs.map (λ ⟨k, v⟩ , (repr k) ++ ": " ++ (json_encode v)) in
+  "{" ++ (string.intercalate ", " (pair_strings)) ++ "}"
+| (json.number i) := repr i
+| (json.string s) := repr s
+| (json.bool tt) := "true"
+| (json.bool ff) := "false"
+| json.null := "null"
+
+
 private meta def trace_rw_params (tactic_name: string) (r : rw_rule) (cfg : rewrite_cfg): tactic unit :=
 do
-  let s := "\n\nTactic:",
-  let s := s ++ "\n" ++ tactic_name,
-  let s := s ++ "\n" ++ "\nDeclName:",
+  -- key values pairs for json output
+  let kvs : list (string × json) := [],
+  -- tactic
+  let kvs := ("tactic", to_json tactic_name) :: kvs,
+  -- declaration name
   n ← tactic.decl_name,
-  let s := s ++ "\n" ++ (to_string (to_fmt n)),
-  let s := s ++ "\n" ++ "\nState:",
+  let kvs := ("declarationName", to_json (to_fmt n)) :: kvs,
+  -- state
   state ← tactic.read,
-  let s := s ++ "\n" ++ (to_string (to_fmt state)),
-  let s := s ++ "\n" ++ "\nTarget:",
+  let kvs := ("state", to_json (to_fmt state)) :: kvs,
+  -- target
   target ← tactic.target,
   fmt <- tactic.pp target,
-  let s := s ++ "\n" ++ (to_string fmt),
-  let s := s ++ "\n" ++ "\nTarget raw:",
-  let s := s ++ "\n" ++ (to_string (to_raw_fmt target)),
-  let s := s ++ "\n" ++ "\nConfig md:",
+  let kvs := ("target", to_json fmt) :: kvs,
+  -- target raw format
+  let kvs := ("targetRawFormat", to_json (to_raw_fmt target)) :: kvs,
+  -- configMd
   let md := match cfg.md with
   | transparency.all := "transparency.all"
   | transparency.semireducible := "transparency.semireducible"
@@ -395,36 +432,34 @@ do
   | transparency.reducible := "transparency.reducible" 
   | transparency.none := "transparency.none" 
   end,
-  let s := s ++ "\n" ++ (to_string (to_fmt md)),
-  let s := s ++ "\n" ++ "\nRule position:",
-  let s := s ++ "\n" ++ (to_string (to_fmt r.pos)),
-  let s := s ++ "\n" ++ "\nFlipped:",
-  let s := s ++ "\n" ++ (to_string (to_fmt r.symm)),
-  let s := s ++ "\n" ++ "\nExpr:",
-  let s := s ++ "\n" ++ (to_string (to_fmt r.rule)),
-  let s := s ++ "\n" ++ "\nLocal type:",
+  let kvs := ("configMd", to_json (to_fmt md)) :: kvs,
+  -- rulePositionLine and rulePositionColumn
+  let kvs := ("rulePosLine", to_json r.pos.1) :: kvs,
+  let kvs := ("rulePosColumn", to_json r.pos.2) :: kvs,
+  -- ruleSymmetry
+  let kvs := ("ruleSymmetry", to_json r.symm) :: kvs,
+  -- ruleExpression
+  let kvs := ("ruleExpression", to_json (to_fmt r.rule)) :: kvs,
+  -- ruleLocalType
   e <- tactic.to_expr r.rule tt ff,  -- need to use optional params to avoid adding metavariable subgoals
   t <- tactic.infer_type e,
   fmt <- tactic.pp t,
-  let s := s ++ "\n" ++ (to_string fmt),
-  let s := s ++ "\n" ++ "\nLocal type raw:",
-  let s := s ++ "\n" ++ (to_string (to_raw_fmt t)),
-  let s := s ++ "\n" ++ "\nName:",
+  let kvs := ("ruleLocalType", to_json fmt) :: kvs,
+  -- ruleLocalTypeRaw
+  let kvs := ("ruleLocalTypeRaw", to_json (to_raw_fmt t)) :: kvs,
+  -- ruleName
   let n := local_pp_name r.rule,
-  let s := s ++ "\n" ++ (to_string (to_fmt n)),
-  s1 <- (do
+  let kvs := ("ruleName", to_json (to_fmt n)) :: kvs,
+  -- declarationType and declarationTypeRaw
+  ⟨(decl_type: json), (decl_type_raw: json)⟩ <- (do
     d <- tactic.get_decl n,
-    let s1 := "\nDeclared Type:",
     let dt := declaration.type d,
     fmt <- tactic.pp dt,
-    let s1 := s1 ++ "\n" ++ (to_string fmt),
-    let s1 := s1 ++ "\n" ++ "\nDeclared type raw:",
-    let s1 := s1 ++ "\n" ++ (to_string (to_raw_fmt dt)),
-    return s1
-  ) <|> return "",
-  let s := s ++ "\n" ++ s1,
-  let s := s ++ "\n",
-  tactic.trace s,
+    return (to_json fmt, to_json (to_raw_fmt dt))
+  ) <|> return (json.null, json.null),
+  let kvs := ("declarationType", decl_type) :: kvs,
+  let kvs := ("declarationTypeRaw", decl_type_raw) :: kvs,
+  tactic.trace $ "\n\n" ++ (json_encode (json.object kvs.reverse)) ++ "\n",
   return ()
 
 /- A wrapper around rw_core which provides valuable tracing information. -/
